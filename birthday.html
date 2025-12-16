@@ -1,0 +1,400 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta http-equiv="Content-Type" content="text/html; charset=UTF-8">
+    <meta name="format-detection" content="telephone=no">
+    <title>生日祝福</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            background: #000;
+            overflow: hidden;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            min-height: 100vh;
+            font-family: "Microsoft YaHei", "SimHei", Arial, sans-serif;
+        }
+
+        canvas {
+            display: block;
+            background: #000;
+            max-width: 100%;
+            max-height: 100vh;
+        }
+
+        .loading {
+            position: absolute;
+            color: #ffb4c8;
+            font-size: 20px;
+            text-align: center;
+            z-index: 10;
+        }
+    </style>
+</head>
+<body>
+    <div class="loading" id="loading">加载中...</div>
+    <canvas id="birthdayCanvas"></canvas>
+
+    <script>
+        // 核心配置
+        const CONFIG = {
+            WIDTH: 800,
+            HEIGHT: 500,
+            FIREWORK_INTERVAL: 0.1,
+            MAX_FIREWORKS: 20,
+            FIREWORK_EXPLOSION_COUNT: 150,
+            MAX_FIREWORK_PARTICLES: 2000,
+            FIREWORK_LAUNCH_SPEED_MIN: -8,
+            FIREWORK_LAUNCH_SPEED_MAX: -4,
+            FIREWORK_GRAVITY: 0.35,
+            BG_TEXT_COUNT: 16,
+            BG_TEXT_SPEED_MIN: 0.5,
+            BG_TEXT_SPEED_MAX: 1.5,
+            BG_TEXT_SIZE_MIN: 20,
+            BG_TEXT_SIZE_MAX: 35
+        };
+
+        // 状态管理
+        const STATE = {
+            current: 'heart_beat',
+            heart_beat_timer: 0,
+            HEART_BEAT_DURATION: 3,
+            auto_firework_timer: 0,
+            popup_idx: 0,
+            text_particles: [],
+            text_target_points: [],
+            is_text_arrived: false,
+            text_fade_state: 0,
+            text_alpha: 0,
+            text_scale: 0.5,
+            bg_text_states: [],
+            fireworks: [],
+            firework_particles: [],
+            heart_particles: [] // 修复未初始化问题
+        };
+
+        // 文本内容
+        const BG_TEXTS = [
+            "愿你被世界温柔以待", "每天都有甜甜的好运", "一岁一礼，一寸欢喜",
+            "生活明朗，万物可爱", "平安喜乐，万事胜意", "暴富暴美，开心加倍",
+            "岁岁无虞，长安常乐", "顺颂时宜，秋绥冬禧", "愿你自由洒脱", "头等大事是取悦自己",
+            "你是生机盎然的春天", "去更远的地方，见更亮的光", "愿你与幸运撞个满怀",
+            "祝你的每一岁，都能奔走在自己的热爱里", "岁岁平安，顺风顺水",
+            "希君生羽翼，一化北溟鱼", "我将玫瑰藏于身后，时刻期盼着与你赴约",
+            "愿你此去星辰大海，前程锦绣如画", "祝你所求皆如愿，所行化坦途", "多喜乐，长安宁"
+        ];
+        const POPUP_TEXTS = ["真的不开始吗？", "一点都不好奇里面的惊喜吗~", "错过会很可惜哦！"];
+
+        // 工具函数
+        function random(min, max) { return Math.random() * (max - min) + min; }
+        function degToRad(deg) { return deg * Math.PI / 180; }
+        class Vec2 {
+            constructor(x, y) { this.x = x || 0; this.y = y || 0; }
+            length() { return Math.sqrt(this.x * this.x + this.y * this.y); }
+            normalize() {
+                const len = this.length();
+                if (len > 0) { this.x /= len; this.y /= len; }
+                return this;
+            }
+        }
+
+        // 粒子类 - 爱心粒子
+        class HeartParticle {
+            constructor(x, y, targetX, targetY) {
+                this.pos = new Vec2(x, y);
+                this.target = new Vec2(targetX, targetY);
+                this.speed = random(4, 6);
+                this.size = 2;
+                this.arrived = false;
+                this.beat = 0;
+            }
+            update() {
+                if (!this.arrived) {
+                    const dir = new Vec2(this.target.x - this.pos.x, this.target.y - this.pos.y);
+                    if (dir.length() > 0) { dir.normalize(); this.pos.x += dir.x * this.speed; this.pos.y += dir.y * this.speed; }
+                    if (dir.length() < 5) this.arrived = true;
+                } else {
+                    this.beat += 0.12;
+                    this.size = 2 + Math.sin(this.beat) * 0.7;
+                }
+            }
+            draw(ctx) {
+                ctx.save();
+                ctx.fillStyle = 'rgba(255, 180, 200, 1)';
+                ctx.arc(this.pos.x, this.pos.y, this.size, 0, 2 * Math.PI);
+                ctx.fill();
+                ctx.fillStyle = 'rgba(255, 210, 220, 0.8)';
+                ctx.arc(this.pos.x, this.pos.y, this.size * 0.7, 0, 2 * Math.PI);
+                ctx.fill();
+                ctx.restore();
+            }
+        }
+
+        // 粒子类 - 烟花粒子
+        class Firework {
+            constructor(x) {
+                this.pos = new Vec2(x, CONFIG.HEIGHT - 10);
+                this.color = { r: random(220, 255), g: random(150, 220), b: random(180, 255) };
+                this.is_launch = true;
+                this.vel = new Vec2(random(-0.5, 0.5), random(CONFIG.FIREWORK_LAUNCH_SPEED_MIN, CONFIG.FIREWORK_LAUNCH_SPEED_MAX));
+                this.size = random(3, 5);
+                this.gravity = CONFIG.FIREWORK_GRAVITY;
+                this.decay = 0.95;
+                this.maxHeight = random(CONFIG.HEIGHT * 0.6, CONFIG.HEIGHT * 0.9); // 低位置爆炸
+            }
+            update() {
+                const newParticles = [];
+                if (this.is_launch) {
+                    this.vel.y += this.gravity;
+                    const shouldExplode = this.vel.y >= 0 || this.pos.y <= this.maxHeight;
+                    if (shouldExplode) {
+                        this.is_launch = false;
+                        for (let i = 0; i < CONFIG.FIREWORK_EXPLOSION_COUNT; i++) {
+                            const angle = random(0, 2 * Math.PI);
+                            const speed = random(5, 10);
+                            newParticles.push({
+                                pos: new Vec2(this.pos.x, this.pos.y),
+                                vel: new Vec2(Math.cos(angle) * speed, Math.sin(angle) * speed),
+                                size: random(2, 4),
+                                color: this.color,
+                                gravity: 0.08,
+                                decay: 0.92,
+                                alpha: 255
+                            });
+                        }
+                    }
+                }
+                this.vel.x *= this.decay;
+                this.vel.y *= this.decay;
+                this.pos.x += this.vel.x;
+                this.pos.y += this.vel.y;
+                this.size *= 0.96;
+                return newParticles;
+            }
+            draw(ctx) {
+                ctx.save();
+                ctx.fillStyle = `rgb(${this.color.r}, ${this.color.g}, ${this.color.b})`;
+                ctx.arc(this.pos.x, this.pos.y, this.size, 0, 2 * Math.PI);
+                ctx.fill();
+                ctx.restore();
+            }
+        }
+
+        // 背景文字生成
+        function resetBgText() {
+            const needCount = CONFIG.BG_TEXT_COUNT - STATE.bg_text_states.length;
+            for (let i = 0; i < needCount; i++) {
+                STATE.bg_text_states.push({
+                    text: BG_TEXTS[Math.floor(random(0, BG_TEXTS.length))],
+                    x: random(0, CONFIG.WIDTH),
+                    y: random(CONFIG.HEIGHT, CONFIG.HEIGHT + 100),
+                    scale: 0.5,
+                    alpha: 0,
+                    speed: random(CONFIG.BG_TEXT_SPEED_MIN, CONFIG.BG_TEXT_SPEED_MAX),
+                    baseSize: random(CONFIG.BG_TEXT_SIZE_MIN, CONFIG.BG_TEXT_SIZE_MAX),
+                    life: random(200, 300),
+                    alphaSpeed: random(3, 5)
+                });
+            }
+        }
+
+        // 初始化爱心轨迹
+        function getHeartPoints(centerX, centerY, scale) {
+            const points = [];
+            for (let t = 0; t < 360; t++) {
+                const rad = degToRad(t);
+                const x = 16 * Math.pow(Math.sin(rad), 3);
+                const y = -(13 * Math.cos(rad) - 5 * Math.cos(2 * rad) - 2 * Math.cos(3 * rad) - Math.cos(4 * rad));
+                points.push([centerX + x * scale, centerY + y * scale]);
+            }
+            return points;
+        }
+
+        // 主初始化
+        function init() {
+            const canvas = document.getElementById('birthdayCanvas');
+            const ctx = canvas.getContext('2d');
+            canvas.width = CONFIG.WIDTH;
+            canvas.height = CONFIG.HEIGHT;
+
+            // 初始化爱心粒子
+            const heartPoints = getHeartPoints(400, 250, 12);
+            heartPoints.forEach(([tx, ty]) => {
+                for (let i = 0; i < 2; i++) {
+                    STATE.heart_particles.push(new HeartParticle(random(0, 800), random(500, 550), tx, ty));
+                }
+            });
+
+            // 初始化背景文字
+            resetBgText();
+
+            // 隐藏加载提示
+            document.getElementById('loading').style.display = 'none';
+
+            // 主循环
+            function mainLoop(timestamp) {
+                ctx.fillStyle = '#000';
+                ctx.fillRect(0, 0, CONFIG.WIDTH, CONFIG.HEIGHT);
+
+                // 爱心动画阶段
+                if (STATE.current === 'heart_beat') {
+                    STATE.heart_beat_timer += 1 / 60;
+                    STATE.heart_particles.forEach(p => { p.update(); p.draw(ctx); });
+                    if (STATE.heart_beat_timer >= CONFIG.HEART_BEAT_DURATION) STATE.current = 'start';
+                }
+
+                // 初始界面
+                else if (STATE.current === 'start') {
+                    STATE.heart_particles.forEach(p => { p.update(); p.draw(ctx); });
+                    // 绘制标题
+                    ctx.font = 'bold 70px Microsoft YaHei';
+                    ctx.fillStyle = 'rgba(255, 160, 190, 1)';
+                    const title = '开始一段神奇的旅程';
+                    ctx.fillText(title, (CONFIG.WIDTH - ctx.measureText(title).width) / 2, 80);
+                    // 绘制按钮
+                    ctx.fillStyle = 'rgba(255, 200, 220, 1)';
+                    ctx.fillRect(250, 400, 150, 50);
+                    ctx.fillRect(400, 400, 150, 50);
+                    ctx.font = '30px Microsoft YaHei';
+                    ctx.fillStyle = 'rgba(255, 100, 150, 1)';
+                    ctx.fillText('开始', 290, 435);
+                    ctx.fillText('不开始', 420, 435);
+                    // 按钮点击
+                    canvas.onclick = (e) => {
+                        const rect = canvas.getBoundingClientRect();
+                        const x = e.clientX - rect.left;
+                        const y = e.clientY - rect.top;
+                        if (x >= 250 && x <= 400 && y >= 400 && y <= 450) STATE.current = 'main';
+                        if (x >= 400 && x <= 550 && y >= 400 && y <= 450) STATE.current = 'popup';
+                    };
+                }
+
+                // 弹窗界面
+                else if (STATE.current === 'popup') {
+                    STATE.heart_particles.forEach(p => { p.update(); p.draw(ctx); });
+                    // 绘制弹窗
+                    ctx.fillStyle = 'rgba(255,255,255,0.8)';
+                    ctx.fillRect(225, 170, 350, 160);
+                    ctx.font = '30px Microsoft YaHei';
+                    ctx.fillStyle = 'rgba(255, 100, 150, 1)';
+                    const popupText = POPUP_TEXTS[STATE.popup_idx];
+                    ctx.fillText(popupText, (CONFIG.WIDTH - ctx.measureText(popupText).width) / 2, 220);
+                    // 弹窗按钮
+                    ctx.fillStyle = 'rgba(255, 200, 220, 1)';
+                    ctx.fillRect(285, 250, 90, 45);
+                    ctx.fillRect(425, 250, 90, 45);
+                    ctx.fillText('开始', 305, 280);
+                    ctx.fillText('不开始', 435, 280);
+                    // 弹窗点击
+                    canvas.onclick = (e) => {
+                        const rect = canvas.getBoundingClientRect();
+                        const x = e.clientX - rect.left;
+                        const y = e.clientY - rect.top;
+                        if (x >= 285 && x <= 375 && y >= 250 && y <= 295) STATE.current = 'main';
+                        if (x >= 425 && x <= 515 && y >= 250 && y <= 295) STATE.popup_idx = (STATE.popup_idx + 1) % 3;
+                    };
+                }
+
+                // 主界面（烟花+文字）
+                else if (STATE.current === 'main') {
+                    // 自动生成烟花
+                    STATE.auto_firework_timer += 1 / 60;
+                    if (STATE.auto_firework_timer >= CONFIG.FIREWORK_INTERVAL) {
+                        while (STATE.fireworks.length < CONFIG.MAX_FIREWORKS) {
+                            STATE.fireworks.push(new Firework(random(50, 750)));
+                        }
+                        STATE.auto_firework_timer = 0;
+                    }
+
+                    // 更新绘制烟花
+                    STATE.fireworks.forEach((fw, idx) => {
+                        const particles = fw.update();
+                        STATE.firework_particles.push(...particles);
+                        fw.draw(ctx);
+                        if (fw.size < 0.2) STATE.fireworks.splice(idx, 1);
+                    });
+
+                    // 更新绘制烟花粒子
+                    STATE.firework_particles.forEach((p, idx) => {
+                        p.vel.y += p.gravity;
+                        p.vel.x *= p.decay;
+                        p.vel.y *= p.decay;
+                        p.pos.x += p.vel.x;
+                        p.pos.y += p.vel.y;
+                        p.size *= 0.97;
+                        p.alpha -= 1;
+                        if (p.size < 0.3 || p.alpha <= 0) {
+                            STATE.firework_particles.splice(idx, 1);
+                            return;
+                        }
+                        ctx.save();
+                        ctx.fillStyle = `rgba(${p.color.r}, ${p.color.g}, ${p.color.b}, ${p.alpha / 255})`;
+                        ctx.arc(p.pos.x, p.pos.y, p.size, 0, 2 * Math.PI);
+                        ctx.fill();
+                        ctx.strokeStyle = `rgba(255,255,255,${p.alpha / 255 * 0.5})`;
+                        ctx.lineWidth = 0.3;
+                        ctx.stroke();
+                        ctx.restore();
+                    });
+
+                    // 限制烟花粒子数量
+                    if (STATE.firework_particles.length > CONFIG.MAX_FIREWORK_PARTICLES) {
+                        STATE.firework_particles = STATE.firework_particles.slice(-CONFIG.MAX_FIREWORK_PARTICLES);
+                    }
+
+                    // 背景文字
+                    STATE.bg_text_states.forEach((item, idx) => {
+                        item.y -= item.speed;
+                        item.alpha = Math.min(255, item.alpha + item.alphaSpeed);
+                        item.scale = Math.min(1.2, item.scale + 0.005);
+                        item.life--;
+                        if (item.life <= 0 || item.y < -50) {
+                            STATE.bg_text_states.splice(idx, 1);
+                            return;
+                        }
+                        ctx.save();
+                        const alpha = item.alpha / 255;
+                        ctx.font = `${item.baseSize * item.scale}px Microsoft YaHei`;
+                        ctx.fillStyle = `rgba(220,180,240,${alpha})`;
+                        ctx.strokeStyle = `rgba(255,255,255,${alpha * 0.5})`;
+                        ctx.lineWidth = 0.5;
+                        ctx.strokeText(item.text, item.x, item.y);
+                        ctx.fillText(item.text, item.x, item.y);
+                        ctx.restore();
+                    });
+                    resetBgText();
+
+                    // 绘制生日快乐文字
+                    ctx.font = 'bold 80px Microsoft YaHei';
+                    ctx.fillStyle = 'rgba(255, 160, 190, 1)';  
+                    const happyText = '生日快乐';
+                    ctx.fillText(happyText, (CONFIG.WIDTH - ctx.measureText(happyText).width) / 2, 250);
+
+                    // 点击生成烟花
+                    canvas.onclick = (e) => {
+                        const rect = canvas.getBoundingClientRect();
+                        const x = e.clientX - rect.left;
+                        for (let i = 0; i < 5; i++) {
+                            STATE.fireworks.push(new Firework(x + random(-100, 100)));
+                        }
+                    };
+                }
+
+                requestAnimationFrame(mainLoop);
+            }
+            requestAnimationFrame(mainLoop);
+        }
+
+        // 页面加载后初始化
+        window.onload = init;
+    </script>
+</body>
+</html>
